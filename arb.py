@@ -10,11 +10,27 @@ from contracts import addresses, abis
 logger = logging.getLogger()
 logger.setLevel("DEBUG")
 
-uniswapV2 = web3.eth.contract(
-    address=web3.toChecksumAddress(addresses["dex"]["UniswapV2"]), 
-    abi=abis.uniswap_abi
-)
+# ASSUMPTIONS:
+# 
+# 1. token0 is alaways DAI
+# 
 
-reserve0, reserve1, *_ = uniswapV2.functions.getReserves().call()
-logging.info(f"reserve0: {reserve0}, reserve1: {reserve1}")
+
+# init
+def DexPool(address):
+    return web3.eth.contract(
+        address=web3.toChecksumAddress(address), 
+        abi=abis.uniswap_abi
+    )
+
+pools = {
+    k: DexPool(v) for k,v in addresses["dex"].items()
+}
+
+
+
+def gatherData():
+    for dex,pool in pools.items():
+    reserve0, reserve1, *_ = pool.functions.getReserves().call()
+    print(f"dex {dex}: \t reserve0: {reserve0} \t reserve1: {reserve1}")
     
