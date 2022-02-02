@@ -2,21 +2,24 @@ import logging
 import json
 from provider import web3
 from functools import reduce
-
+import time
 from decimal import Decimal
 import math
-
 from contracts import addresses, abis
 
-logger = logging.getLogger()
-logger.setLevel("DEBUG")
+logging.basicConfig(
+    format="[%(levelname)s] [%(asctime)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S UTC+0" # UTC hardcoded
+)
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # ASSUMPTIONS:
 # 
 # 1. reserve0 is always DAI
 # 
 
-ETH_SWAP_AMOUNT = web3.toWei(0.001, 'ether')
+ETH_SWAP_AMOUNT = web3.toWei(0.03, 'ether')
 
 # init contracts 
 def DexPool(address):
@@ -25,6 +28,8 @@ def DexPool(address):
         abi=abis.uniswap_abi
     )
 pools = { k: DexPool(v) for k,v in addresses["dex"].items() }
+
+
 
 # TODO: for more precision do not use floats for price
 pool_prices = { k: {} for k,v in addresses["dex"].items() }
@@ -44,7 +49,7 @@ def gather_data():
         dai2eth_price = dai2eth_amount / ETH_SWAP_AMOUNT
         pool_prices[dex]["dai2eth"] = dai2eth_price
 
-        print(f"""
+        logger.debug(f"""
             {dex}
             dai_reserve: {dai_reserve}
             eth_reserve: {eth_reserve}
@@ -82,12 +87,14 @@ def find_arbitrage():
     eth_in = web3.fromWei(ETH_SWAP_AMOUNT, 'ether')
     dai_out = Decimal(pool_prices[max_eth2dai]["eth2dai"]) * eth_in
     eth_out = dai_out / Decimal(pool_prices[min_dai2eth]["dai2eth"])
-    print(f"""
+    report = f"""
         arbitrage from {max_eth2dai} to {min_dai2eth}
         1. trade {eth_in} eth for {dai_out} dai on {max_eth2dai}
         2. trade {dai_out} dai for {eth_out} eth on {min_dai2eth}
         3. profit {eth_out - eth_in} eth (${profit})
-    """)
+    """
+
+    return (profit, report)
         
 
 def get_amount_out(amount, reserve_in, reserve_out):
@@ -119,5 +126,16 @@ def get_amount_in(amount, reserve_in, reserve_out):
     amount_in = (numerator // denominator) + 1
     return amount_in
 
-gather_data()
-find_arbitrage()
+def main():
+    max_profit = 0
+    while (True):
+        gather_data()
+        profit, report = find_arbitrage()
+
+        if profit > max_profit:
+            max_profit = profit
+            logger.info(report)
+        
+        time.sleep(15)
+main()
+
