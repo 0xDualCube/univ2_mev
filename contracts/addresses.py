@@ -9,5 +9,6 @@ addresses = {
         "Shebaswap": "0x8faf958e36c6970497386118030e6297fff8d275",
         "Sakeswap": "0x2ad95483ac838e2884563ad278e933fba96bc242",
         "Croswap": "0x60a26d69263ef43e9a68964ba141263f19d71d51"
-    }
+    },
+    "UniswapV2Router02": "0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D"
 }

@@ -1,2 +1,2 @@
 from .addresses import addresses
-from . import abis
+from .abis import abis
