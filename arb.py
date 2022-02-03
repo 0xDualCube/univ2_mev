@@ -14,6 +14,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
+# TODO:
+# 
+# 1. optimization: use async http lib instead of web3 lib
+# 2. 
+#
 # ASSUMPTIONS:
 # 
 # 1. reserve0 is always DAI
@@ -59,6 +64,8 @@ def gather_data():
 
 def find_arbitrage():
     """
+    returns (profit_in_usd, report_string)
+
     finds best arbitrage opportunity by getting the 
     highest eth bid quote and lowest eth ask quote
     """
@@ -82,7 +89,7 @@ def find_arbitrage():
         - pool_prices[min_dai2eth]["dai2eth"]
     )
 
-    if profit <= 0: return
+    if profit <= 0: return (0, 0)
     
     eth_in = web3.fromWei(ETH_SWAP_AMOUNT, 'ether')
     dai_out = Decimal(pool_prices[max_eth2dai]["eth2dai"]) * eth_in
@@ -97,32 +104,38 @@ def find_arbitrage():
     return (profit, report)
         
 
-def get_amount_out(amount, reserve_in, reserve_out):
+def get_amount_out(amount_in, reserve_in, reserve_out):
     """
-    gets the token amount out given reserve levels and input amount
+    returns the token amount out given reserve levels and input amount
 
+    X = reserve_in, Y = reserve_out
     X * Y = K
-    Xold Yold = Xnew Ynew
-    ΔY = (Y ΔX)/(X + ΔX)
+    X * Y = (X + ΔX)(Y - ΔY)
+    ΔY = (Y * ΔX) / (X + ΔX)
     
     ref: https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol
     """
 
-    amount_in_with_fee = amount * 997
+    amount_in_with_fee = amount_in * 997
     numerator = amount_in_with_fee * reserve_out
     denominator = (reserve_in * 1000) + amount_in_with_fee
     amount_out = numerator // denominator
     return amount_out
 
-def get_amount_in(amount, reserve_in, reserve_out):
+def get_amount_in(amount_out, reserve_in, reserve_out):
     """
-    gets the token amount in required to get the amount out
+    returns the token amount in required to get the amount out
     
+    X = reserve_in, Y = reserve_out
+    X * Y = K
+    X * Y = (X + ΔX)(Y - ΔY)
+    ΔX = (X * ΔY) / (Y - ΔY)
+
     ref: https://github.com/Uniswap/v2-periphery/blob/master/contracts/libraries/UniswapV2Library.sol
     """
 
-    numerator = reserve_in * amount * 1000
-    denominator = (reserve_out - amount) * 997
+    numerator = reserve_in * amount_out * 1000
+    denominator = (reserve_out - amount_out) * 997
     amount_in = (numerator // denominator) + 1
     return amount_in
 
