@@ -26,7 +26,7 @@ logger.setLevel(logging.DEBUG)
 # 1. reserve0 is always DAI
 # 
 
-ETH_SWAP_AMOUNT = web3.toWei(1, 'ether')
+ETH_SWAP_AMOUNT = web3.toWei(0.001, 'ether')
 ETH_BLOCK_TIME = 15
 
 # init contracts 
@@ -96,25 +96,29 @@ def get_max_out(amount_in, token_in, pools, alloc=100):
 
     return (max_out, allocations)
 
-
-# O(k*n) -> O(log(k)n)
-min_alloc2 = 2 # percent allocation out of 100
-def get_max_out2(amount_in, token_in, pools=pool_data):
+min_alloc = 1 # percent allocation out of 100
+def get_pool_split(amount_in, token_in, pools=pool_data):
     """
-    TODO optimization: start by allocating entirely to best
-    priced pool then start rebalancing one allocation at a time
-    then incremental increase in allocation fidelity
+    amount_in: amount of tokens in
+    token_in: which token is going in
+    pools: the pools state dict
 
-    returns a tuple of (amount_out, (allocations))
-    where amount_out is the # of tokens recieved
-    and allocations is a tuple with the number of tokens to go to each pool    
+    returns a tuple of (amount_out, pools) 
+    where amount_out is the max tokens extractable from the market
+    and the pools state dict is a copy of the one passed but 
+    updated to include an "allocation" key for each pool that maps
+    to the percent of input tokens that should be sent to that pool
+
+    this can probably be optimized to constant time using
+    multivariable calculus (find global extrema where the
+    variables are the allocation to each pool)
 
     O(n log(n) + k log(n))
     k = number of allocations (usually 100 - 1000)
     n = number of pools (usually 1 - 100)
     """
 
-    alloc_amount = math.floor(amount_in * min_alloc2 / 100)
+    alloc_amount = math.floor(amount_in * min_alloc / 100)
 
     # max heap to keep track of which pool has 
     # the best swap rate for the next allocation
@@ -131,15 +135,17 @@ def get_max_out2(amount_in, token_in, pools=pool_data):
     for pool in pools.keys():
         push_pool_heap(pool)
     
+    # get ready to distribute allocations
     pools = json.loads(json.dumps(pools))
     for pool in pools.keys():
         if not "allocation" in pools[pool]:
             pools[pool]["allocation"] = 0
+    alloctions_left = 100 - sum(v["allocation"] for v in pools.values())
 
     # allocate all the allocations
-    for i in range(0, 100, min_alloc2):
+    for i in range(0, alloctions_left, min_alloc):
         max_out, max_pool = pop_pool_heap()
-        pools[max_pool]["allocation"] += min_alloc2
+        pools[max_pool]["allocation"] += min_alloc
         
         # update the reserves
         if token_in == "eth":
@@ -151,10 +157,6 @@ def get_max_out2(amount_in, token_in, pools=pool_data):
         
         push_pool_heap(max_pool)
 
-    # # format allocs
-    # def token_alloc(pool_key):
-    #     return math.floor(amount_in * pools[pool_key]["allocation"] / 100)
-
     # get the total output
     def get_pool_output(pool_key):
         amount = math.floor(amount_in * pools[pool_key]["allocation"] / 100)
@@ -162,26 +164,27 @@ def get_max_out2(amount_in, token_in, pools=pool_data):
     max_out = sum(map(get_pool_output, pools.keys()))
 
     # remove pools that don't cover their own extra gas cost
-    active_pools = {k:v for k,v in pools.items() if v["allocation"] > 0}
-    # sorted_pools = list(active_pools.keys())
-    # sorted_pools.sort(
-    #     key=lambda pool: active_pools[pool]["allocation"],
-    #     reverse=True
-    # )
-    # for pool in sorted_pools:
-    #     pool_amount = active_pools[pool]["allocation"]
-    #     without_pool = {k:v for k,v in active_pools.items() if k != pool}
-    #     rebalanced_out, new_pools = get_max_out2(pool_amount, token_in, without_pool)
+    pools = {k:v for k,v in pools.items() if v["allocation"] > 0}
+    sorted_pools = list(pools.keys())
+    sorted_pools.sort(
+        key=lambda pool: pools[pool]["allocation"],
+        reverse=True
+    )
+    for pool in sorted_pools[1:]:
+        pool_amount = pools[pool]["allocation"]
+        without_pool = {k:v for k,v in pools.items() if k != pool}
+        rebalanced_out, new_pools = get_pool_split(amount_in, token_in, without_pool)
 
-    #     token_diff = max_out - rebalanced_out
-    #     if token == "eth":
-    #         token_diff = get_amount_out_dex(token_diff, "dai", "UniswapV2")
-    #     if token_diff < swap_gas_fee:
-    #         active_pools = new_pools # drop the pool
+        token_diff = max_out - rebalanced_out
+        if token_in == "eth":
+            token_diff = get_amount_out_dex(token_diff, "dai", "UniswapV2")
+        if token_diff < swap_gas_fee:
+            pools = new_pools # drop the pool
+            max_out = rebalanced_out
 
-    return (max_out, active_pools)
+    return (max_out, pools)
 
-def get_max_out3():
+def get_pool_split_experimental():
     """
     optimal balance achieved once no 2 pools
     can be rebalanced to increase token output
@@ -210,52 +213,47 @@ def get_max_out3():
 # @profile
 def find_arbitrage():
     """
-    returns (profit_in_usd, report_string)
+    returns (profit_in_eth, report_string)
 
-    finds best arbitrage opportunity by getting the 
-    highest eth bid quote and lowest eth ask quote
+    finds best arbitrage opportunity on the market
     """
 
-    # max_out, allocs = get_max_out(ETH_SWAP_AMOUNT, "eth", list(pools.keys()))
-    # logger.debug(f"""
-    #     BRUTE FORCE ALGO
-    #     tokens_out: {max_out}
-    #     {tuple(pools.keys())}
-    #     {allocs}
-    # """)
-
-    dai_out, eth_swaps = get_max_out2(ETH_SWAP_AMOUNT, "eth")
-    eth_back, dai_swaps = get_max_out2(dai_out, "dai")
+    dai_out, eth_swaps = get_pool_split(ETH_SWAP_AMOUNT, "eth")
+    eth_back, dai_swaps = get_pool_split(dai_out, "dai")
     logger.debug(f"""
         BALANCED DISTRIBUTION ALGO
         tokens_out: {dai_out}
         { json.dumps(
             { k:v["allocation"] for k,v in eth_swaps.items() }
         )}
-        { list(eth_swaps.keys()) }
-        { list(v["allocation"] for v in eth_swaps.values()) }
     """)
 
     # calculate profitability
-    swap_count = len(list(filter(None,eth_swaps))) + len(list(filter(None,dai_swaps)))
+    swap_count = len(list(eth_swaps)) + len(list(dai_swaps))
     gas_fee = swap_gas_fee * swap_count
     profit = eth_back - ETH_SWAP_AMOUNT - gas_fee
     profit = web3.fromWei(abs(profit), 'ether') * -1 if profit < 0 else 1
-    print(f"\t profit: {profit} eth \n")
 
-    # dex with the highest eth price for eth2dai
-    max_eth2dai = list(pools.keys())[0]
-    for pool,price in pool_data.items():
-        if price["eth2dai"] > pool_data[max_eth2dai]["eth2dai"]:
-            max_eth2dai = pool
+    # prepare report
+    for v in eth_swaps.values():
+        v["allocation"] = str(v["allocation"]) + "%"
+    for v in dai_swaps.values():
+        v["allocation"] = str(v["allocation"]) + "%"
 
-    # dex with the lowest eth price for dai2eth
-    min_dai2eth = list(pools.keys())[0]
-    for pool,price in pool_data.items():
-        if price["dai2eth"] < pool_data[min_dai2eth]["dai2eth"]:
-            min_dai2eth = pool
+    eth_swaps = json.dumps(
+        { k:v["allocation"] for k,v in eth_swaps.items() }
+    )
+    dai_swaps = json.dumps(
+        { k:v["allocation"] for k,v in dai_swaps.items() }
+    )
 
-    return (0, 0)
+    report = f"""
+        1. swap from eth to dai using these pools: {eth_swaps}
+        2. swap from dai to eth using these pools: {dai_swaps}
+        3. profit: {profit} eth 
+    """
+
+    return(profit, report)
         
 
 def get_amount_out(amount_in, reserve_in, reserve_out):
@@ -330,9 +328,12 @@ def get_gas_price(speed):
 def main():
     max_profit = 0
     while (True):
-        # calc_fees()
+        calc_fees()
         gather_data()
         profit, report = find_arbitrage()
+        
+        if profit <= 0:
+            logger.info("no profitable arbitrage yet. monitoring...")
 
         if profit > max_profit:
             max_profit = profit
