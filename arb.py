@@ -14,12 +14,11 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S UTC+0" # UTC hardcoded
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
 
 # TODO:
 # 
 # 1. optimization: use async http lib instead of web3 lib
-# 2. 
 #
 # ASSUMPTIONS:
 # 
@@ -69,32 +68,6 @@ def gather_data():
             eth2dai_price: {eth2dai_price}
             dai2eth_price: {dai2eth_price}
         """)
-
-# O(n!)
-min_alloc = 2 # TODO: make this work with 1
-def get_max_out(amount_in, token_in, pools, alloc=100):
-    if (not pools or len(pools) <= 0): 
-        return (0, ())
-    if (amount_in <= 0 or alloc <= 0):
-        return (0, (0,))
-
-    max_out = 0
-    allocations = ()
-    pool = pools[0]
-    for allocation in range(0, alloc + min_alloc, min_alloc):
-        eth, dai = pool_data[pool]["eth"], pool_data[pool]["dai"]
-        reserves = (eth, dai) if token_in == "eth" else (dai, eth)
-        pool_in = math.floor(amount_in * allocation / 100)
-        pool_out = get_amount_out(pool_in, *reserves)
-
-        others_out, others_allocs = (
-            get_max_out(amount_in, token_in, pools[1:], alloc - allocation))
-
-        if max_out < pool_out + others_out:
-            max_out = pool_out + others_out
-            allocations = (pool_in,) + others_allocs
-
-    return (max_out, allocations)
 
 min_alloc = 1 # percent allocation out of 100
 def get_pool_split(amount_in, token_in, pools=pool_data):
@@ -184,32 +157,6 @@ def get_pool_split(amount_in, token_in, pools=pool_data):
 
     return (max_out, pools)
 
-def get_pool_split_experimental():
-    """
-    optimal balance achieved once no 2 pools
-    can be rebalanced to increase token output
-
-    1. give the pool with the best execution for the whole amount 100% allocation
-    2. add another pool if it has a better price execution for min_alloc
-    3. take the worst performing pool and try rebalancing with each other pool
-       rebalancing done via binary search or min_alloc increments
-    4. repeat 2-3 for each pool
-    5. increase search fidelity (min_alloc) and repeat 2-4
-       limit search range for allocations to +/- prev_min_alloc 
-
-    make max heap of pool total execution price with alloc > 0 = O(n log(n))
-    traverse allocation step sizes = O(log(k))
-        make max heap of pool alloc execution output = O(n log(n))
-        rebalance pool with worst total execution price 
-            until no rebalance increases output = O(k log(n))
-
-    = O(n log(n) log(k)) + O(k log(k) log(n))
-
-    for each pool calculate the difference between including it and not
-    and remove if the savings doesn't cover the gas cost = O(n^2 n log(n) n log(k))
-    """
-
-
 # @profile
 def find_arbitrage():
     """
@@ -232,7 +179,7 @@ def find_arbitrage():
     swap_count = len(list(eth_swaps)) + len(list(dai_swaps))
     gas_fee = swap_gas_fee * swap_count
     profit = eth_back - ETH_SWAP_AMOUNT - gas_fee
-    profit = web3.fromWei(abs(profit), 'ether') * -1 if profit < 0 else 1
+    profit = web3.fromWei(abs(profit), 'ether') * (-1 if profit < 0 else 1)
 
     # prepare report
     for v in eth_swaps.values():
@@ -248,6 +195,7 @@ def find_arbitrage():
     )
 
     report = f"""
+        ARBITRAGE FOUND:
         1. swap from eth to dai using these pools: {eth_swaps}
         2. swap from dai to eth using these pools: {dai_swaps}
         3. profit: {profit} eth 
