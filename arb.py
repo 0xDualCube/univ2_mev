@@ -12,6 +12,8 @@ from heapq import heappop, heappush, heapify
 """
 TODO:
     1. optimization: use async http lib instead of web3 lib
+    2. optimization: get all the reserve levels from one contract call
+    3. increase granularity of pool allocation to 0.1
 
 Assumptions:
     1. reserve0 is always DAI
@@ -72,7 +74,7 @@ def gather_data():
             dai2eth_price: {dai2eth_price}
         """)
 
-min_alloc = 1 # percent allocation out of 100
+MIN_ALLOC = 1 # percent allocation out of 100
 def get_pool_split(amount_in, token_in, pools=pool_data):
     """
     amount_in: amount of tokens in
@@ -98,7 +100,7 @@ def get_pool_split(amount_in, token_in, pools=pool_data):
     n = number of pools (usually 1 - 100)
     """
 
-    alloc_amount = math.floor(amount_in * min_alloc / 100)
+    alloc_amount = math.floor(amount_in * MIN_ALLOC / 100)
 
     # max heap to keep track of which pool has 
     # the best swap rate for the next allocation
@@ -123,9 +125,9 @@ def get_pool_split(amount_in, token_in, pools=pool_data):
     alloctions_left = 100 - sum(v["allocation"] for v in pools.values())
 
     # allocate all the allocations
-    for i in range(0, alloctions_left, min_alloc):
+    for i in range(0, alloctions_left, MIN_ALLOC):
         max_out, max_pool = pop_pool_heap()
-        pools[max_pool]["allocation"] += min_alloc
+        pools[max_pool]["allocation"] += MIN_ALLOC
         
         # update the reserves
         if token_in == "eth":
@@ -158,7 +160,7 @@ def get_pool_split(amount_in, token_in, pools=pool_data):
         token_diff = max_out - rebalanced_out
         if token_in == "eth":
             token_diff = get_amount_out_dex(token_diff, "dai", "UniswapV2")
-            
+
         if token_diff < swap_gas_fee:
             pools = new_pools # drop the pool
             max_out = rebalanced_out
