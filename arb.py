@@ -7,6 +7,7 @@ from decimal import Decimal
 import math
 from contracts import addresses, abis
 import requests
+from heapq import heappop, heappush, heapify
 
 logging.basicConfig(
     format="[%(levelname)s] [%(asctime)s] %(message)s",
@@ -85,8 +86,6 @@ def get_max_out(amount_in, token_in, pools, alloc=100):
         reserves = (eth, dai) if token_in == "eth" else (dai, eth)
         pool_in = math.floor(amount_in * allocation / 100)
         pool_out = get_amount_out(pool_in, *reserves)
-        # TODO handle negative outs
-        # TODO make sure all the allocations accurately add up to amount_in
 
         others_out, others_allocs = (
             get_max_out(amount_in, token_in, pools[1:], alloc - allocation))
@@ -98,61 +97,115 @@ def get_max_out(amount_in, token_in, pools, alloc=100):
     return (max_out, allocations)
 
 
-# O(n)
-min_alloc2 = 1 # percent allocation out of 100
-def get_max_out2(amount_in, token_in):
+# O(k*n) -> O(log(k)n)
+min_alloc2 = 2 # percent allocation out of 100
+def get_max_out2(amount_in, token_in, pools=pool_data):
     """
-    optimal balance achieved once no 2 pools
-    can be rebalanced to increase token output
-
     TODO optimization: start by allocating entirely to best
     priced pool then start rebalancing one allocation at a time
+    then incremental increase in allocation fidelity
 
     returns a tuple of (amount_out, (allocations))
     where amount_out is the # of tokens recieved
-    and allocations is a tuple of the number of tokens to go to each pool
-    """
+    and allocations is a tuple with the number of tokens to go to each pool    
 
-    pools = json.loads(json.dumps(pool_data))
-    for pool in pools.keys():
-        pools[pool]["allocation"] = 0
+    O(n log(n) + k log(n))
+    k = number of allocations (usually 100 - 1000)
+    n = number of pools (usually 1 - 100)
+    """
 
     alloc_amount = math.floor(amount_in * min_alloc2 / 100)
 
+    # max heap to keep track of which pool has 
+    # the best swap rate for the next allocation
+    pool_heap = []
+    def push_pool_heap(pool_key):
+        amount_out = get_amount_out_dex(alloc_amount, token_in, pool_key, pools)
+        node = (-amount_out, pool_key) # negate to make max heap
+        heappush(pool_heap, node)
+
+    def pop_pool_heap():
+        max_out, max_pool = heappop(pool_heap)
+        return (-max_out, max_pool)
+        
+    for pool in pools.keys():
+        push_pool_heap(pool)
+    
+    pools = json.loads(json.dumps(pools))
+    for pool in pools.keys():
+        if not "allocation" in pools[pool]:
+            pools[pool]["allocation"] = 0
+
+    # allocate all the allocations
     for i in range(0, 100, min_alloc2):
-        # get the pool that gets the best rate
-        # O(n) -- can be reduced to O(log(n)) and usually O(1)
-        max_pool = list(pools.keys())[0]
-        max_out = 0
-        for pool in pools.keys():
-            amount_out = get_amount_out_dex(alloc_amount, token_in, pool, pools)
-            if amount_out > max_out:
-                max_out = amount_out
-                max_pool = pool
+        max_out, max_pool = pop_pool_heap()
+        pools[max_pool]["allocation"] += min_alloc2
         
         # update the reserves
-        pools[max_pool]["allocation"] += min_alloc2
         if token_in == "eth":
             pools[max_pool]["eth"] += alloc_amount
             pools[max_pool]["dai"] -= max_out
         else:
             pools[max_pool]["eth"] -= max_out 
             pools[max_pool]["dai"] += alloc_amount
+        
+        push_pool_heap(max_pool)
 
-    # TODO remove smaller pool allocations where the savings don't cover gas fees 
+    # # format allocs
+    # def token_alloc(pool_key):
+    #     return math.floor(amount_in * pools[pool_key]["allocation"] / 100)
 
-    # format allocs
-    def token_alloc(pool_key):
-        return math.floor(amount_in * pools[pool_key]["allocation"] / 100)
-    allocs = tuple(map(token_alloc, pools.keys()))
-    
     # get the total output
-    def calc_output(pool_key):
-        amount = token_alloc(pool_key)
+    def get_pool_output(pool_key):
+        amount = math.floor(amount_in * pools[pool_key]["allocation"] / 100)
         return get_amount_out_dex(amount, token_in, pool_key)
-    max_out = sum(map(calc_output, pools.keys()))
+    max_out = sum(map(get_pool_output, pools.keys()))
 
-    return (max_out, allocs)
+    # remove pools that don't cover their own extra gas cost
+    active_pools = {k:v for k,v in pools.items() if v["allocation"] > 0}
+    # sorted_pools = list(active_pools.keys())
+    # sorted_pools.sort(
+    #     key=lambda pool: active_pools[pool]["allocation"],
+    #     reverse=True
+    # )
+    # for pool in sorted_pools:
+    #     pool_amount = active_pools[pool]["allocation"]
+    #     without_pool = {k:v for k,v in active_pools.items() if k != pool}
+    #     rebalanced_out, new_pools = get_max_out2(pool_amount, token_in, without_pool)
+
+    #     token_diff = max_out - rebalanced_out
+    #     if token == "eth":
+    #         token_diff = get_amount_out_dex(token_diff, "dai", "UniswapV2")
+    #     if token_diff < swap_gas_fee:
+    #         active_pools = new_pools # drop the pool
+
+    return (max_out, active_pools)
+
+def get_max_out3():
+    """
+    optimal balance achieved once no 2 pools
+    can be rebalanced to increase token output
+
+    1. give the pool with the best execution for the whole amount 100% allocation
+    2. add another pool if it has a better price execution for min_alloc
+    3. take the worst performing pool and try rebalancing with each other pool
+       rebalancing done via binary search or min_alloc increments
+    4. repeat 2-3 for each pool
+    5. increase search fidelity (min_alloc) and repeat 2-4
+       limit search range for allocations to +/- prev_min_alloc 
+
+    make max heap of pool total execution price with alloc > 0 = O(n log(n))
+    traverse allocation step sizes = O(log(k))
+        make max heap of pool alloc execution output = O(n log(n))
+        rebalance pool with worst total execution price 
+            until no rebalance increases output = O(k log(n))
+
+    = O(n log(n) log(k)) + O(k log(k) log(n))
+
+    for each pool calculate the difference between including it and not
+    and remove if the savings doesn't cover the gas cost = O(n^2 n log(n) n log(k))
+    """
+
 
 # @profile
 def find_arbitrage():
@@ -163,22 +216,24 @@ def find_arbitrage():
     highest eth bid quote and lowest eth ask quote
     """
 
-    max_out, allocs = get_max_out(ETH_SWAP_AMOUNT, "eth", list(pools.keys()))
-    logger.debug(f"""
-        BRUTE FORCE ALGO
-        tokens_out: {max_out}
-        {tuple(pools.keys())}
-        {allocs}
-    """)
+    # max_out, allocs = get_max_out(ETH_SWAP_AMOUNT, "eth", list(pools.keys()))
+    # logger.debug(f"""
+    #     BRUTE FORCE ALGO
+    #     tokens_out: {max_out}
+    #     {tuple(pools.keys())}
+    #     {allocs}
+    # """)
 
     dai_out, eth_swaps = get_max_out2(ETH_SWAP_AMOUNT, "eth")
     eth_back, dai_swaps = get_max_out2(dai_out, "dai")
-
     logger.debug(f"""
         BALANCED DISTRIBUTION ALGO
         tokens_out: {dai_out}
-        {tuple(pools.keys())}
-        {eth_swaps}
+        { json.dumps(
+            { k:v["allocation"] for k,v in eth_swaps.items() }
+        )}
+        { list(eth_swaps.keys()) }
+        { list(v["allocation"] for v in eth_swaps.values()) }
     """)
 
     # calculate profitability
@@ -275,7 +330,7 @@ def get_gas_price(speed):
 def main():
     max_profit = 0
     while (True):
-        calc_fees()
+        # calc_fees()
         gather_data()
         profit, report = find_arbitrage()
 
