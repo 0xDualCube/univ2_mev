@@ -9,24 +9,28 @@ from contracts import addresses, abis
 import requests
 from heapq import heappop, heappush, heapify
 
+"""
+TODO:
+    1. optimization: use async http lib instead of web3 lib
+
+Assumptions:
+    1. reserve0 is always DAI
+    2. all pools have the same pool fee and same exact code
+
+"""
+
+# config constants
+ETH_SWAP_AMOUNT = web3.toWei(0.001, 'ether')
+ETH_BLOCK_TIME = 15
+LOG_LEVEL = logging.INFO
+
+# logging
 logging.basicConfig(
     format="[%(levelname)s] [%(asctime)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S UTC+0" # UTC hardcoded
 )
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-# TODO:
-# 
-# 1. optimization: use async http lib instead of web3 lib
-#
-# ASSUMPTIONS:
-# 
-# 1. reserve0 is always DAI
-# 
-
-ETH_SWAP_AMOUNT = web3.toWei(0.001, 'ether')
-ETH_BLOCK_TIME = 15
+logger.setLevel(LOG_LEVEL)
 
 # init contracts 
 def DexPool(address):
@@ -41,7 +45,6 @@ uniswap = web3.eth.contract(
     abi=abis["UniswapV2Router02"]
 )
 
-# TODO: for more precision do not use floats for price
 pool_data = { k: {} for k,v in addresses["dex"].items() }
 def gather_data():
     """
@@ -78,9 +81,13 @@ def get_pool_split(amount_in, token_in, pools=pool_data):
 
     returns a tuple of (amount_out, pools) 
     where amount_out is the max tokens extractable from the market
-    and the pools state dict is a copy of the one passed but 
-    updated to include an "allocation" key for each pool that maps
-    to the percent of input tokens that should be sent to that pool
+    and pools is a copy of the pools dict passed in but 
+    updated to include an "allocation" key for each pool that gives
+    the percent of amount_in that should be sent to that pool
+
+    the strategy is to iteratively allocate a fraction of 
+    the liquidity to the pool with the best price execution
+    until all the liquidity is allocated
 
     this can probably be optimized to constant time using
     multivariable calculus (find global extrema where the
@@ -151,6 +158,7 @@ def get_pool_split(amount_in, token_in, pools=pool_data):
         token_diff = max_out - rebalanced_out
         if token_in == "eth":
             token_diff = get_amount_out_dex(token_diff, "dai", "UniswapV2")
+            
         if token_diff < swap_gas_fee:
             pools = new_pools # drop the pool
             max_out = rebalanced_out
@@ -236,6 +244,7 @@ def calc_fees():
     global swap_gas_fee
     """
     determines the current cost of a dex swap in wei
+    gas can be optimized with a custom contract instead of Router2
     """
 
     try:
@@ -255,7 +264,7 @@ def calc_fees():
         swap_gas_fee = gasfee
 
         gasfee_usd = web3.fromWei(gasfee, 'ether') * 2700
-        logger.info(f"""
+        logger.debug(f"""
             swap gas: {gas}
             swap fee: {gasprice} wei (${gasfee_usd})
         """)
